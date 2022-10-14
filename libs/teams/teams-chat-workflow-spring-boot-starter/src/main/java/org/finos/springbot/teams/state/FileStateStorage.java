@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -21,7 +22,11 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.finos.springbot.entityjson.EntityJson;
 import org.finos.springbot.teams.TeamsException;
+import org.finos.springbot.teams.content.TeamsChannel;
+import org.finos.springbot.teams.content.TeamsUser;
+import org.finos.springbot.teams.conversations.StateStorageBasedTeamsConversations;
 import org.finos.springbot.teams.history.TeamsHistory;
 import org.finos.springbot.workflow.data.EntityJsonConverter;
 import org.javatuples.Pair;
@@ -81,6 +86,12 @@ public class FileStateStorage extends AbstractStateStorage {
 
 	@Override
 	public Optional<Map<String, Object>> retrieve(String file) {
+
+		Optional<Map<String, Object>> optional = Optional
+				.ofNullable((Map<String, Object>) ejc.readValue(store.get(file)));
+
+//		return optional;
+
 		String addressable = getAddressable(file);
 		String storageId = getStorage(file);
 		Optional<String> optData = readFile(
@@ -88,7 +99,7 @@ public class FileStateStorage extends AbstractStateStorage {
 		if (optData.isPresent()) {
 			return Optional.ofNullable(ejc.readValue(optData.get()));
 		} else {
-			return Optional.of(Collections.emptyMap());
+			return Optional.empty();
 		}
 	}
 
@@ -204,11 +215,67 @@ public class FileStateStorage extends AbstractStateStorage {
 					return files.stream().map(f -> ejc.readValue(readFile(f.getAbsolutePath()).orElse("")))
 							.collect(Collectors.toList());
 				}
+			} else if (filterMap.containsKey(StateStorageBasedTeamsConversations.ADDRESSABLE_INFO)
+					|| filterMap.containsKey(StateStorageBasedTeamsConversations.ADDRESSABLE_TYPE)) {
+				Set<File> files = getAllDataFiles();
+				out = files.stream().map(f -> ejc.readValue(readFile(f.getAbsolutePath()).orElse("")))
+						.filter(filterAllDataFiles(filterMap)).collect(Collectors.toList());
+				
+				return out;
+
 			}
 		} catch (IOException e) {
 			throw new TeamsException("Error while retrieve data " + e);
 		}
 		return Collections.emptyList();
+	}
+
+	private Predicate<? super EntityJson> filterAllDataFiles(Map<String, Filter> filterMap) {
+		return e -> e.entrySet().stream().map(s -> {
+			if (s.getValue() instanceof TeamsChannel && filterAddressableType(filterMap, "chat")) {
+					return true;
+			}else if (s.getValue() instanceof TeamsUser && filterAddressableType(filterMap, "user")) {
+					return true;
+			}
+			return false;
+		}).findAny().orElse(false);
+	}
+
+	private boolean filterAddressableType(Map<String, Filter> filterMap, String type) {
+		
+		if(filterMap.containsKey(StateStorageBasedTeamsConversations.ADDRESSABLE_TYPE)) {
+			Filter filter = filterMap.get(StateStorageBasedTeamsConversations.ADDRESSABLE_TYPE);
+			if(filter.value.equals(type)) return true;
+		}else {
+			return true;
+		}
+		return false;
+		
+	}
+	
+	
+	private Set<File> getAllDataFiles() {
+		Set<File> fileList = new HashSet<>();
+		getAllAddressableFiles(new File(this.filePath), fileList);
+		return fileList;
+	}
+
+	private void getAllAddressableFiles(File node, Set<File> fileList) {
+		if (node.isDirectory()) {
+			String[] subNote = node.list();
+			for (String fileName : subNote) {
+				File dir = new File(node, fileName);
+				if (dir.isDirectory()) {
+					getAllAddressableFiles(dir, fileList);
+				} else {
+					if (dir.getParentFile().getName().equals(DATA_FOLDER)
+							&& dir.getName().equals(TeamsStateStorage.ADDRESSABLE_KEY + FILE_EXT)) {
+						fileList.add(dir);
+					}
+				}
+			}
+		}
+
 	}
 
 	@SuppressWarnings({ "rawtypes", "unchecked" })
@@ -222,8 +289,7 @@ public class FileStateStorage extends AbstractStateStorage {
 			Map<Object, Long> files = paths.stream()
 					.map(p -> Paths.get(this.filePath + File.separator + address + File.separator + DATA_FOLDER
 							+ File.separator + p.getFileName().toString()))
-					.map(f -> new File(f.toString()))
-					.filter(fileFilter(filterMap))
+					.map(f -> new File(f.toString())).filter(fileFilter(filterMap))
 					.sorted(Collections.reverseOrder(Comparator.comparingLong(File::lastModified)))
 					.collect(Collectors.toMap(k -> k, File::lastModified));
 			l = new ArrayList(files.keySet());
@@ -234,18 +300,19 @@ public class FileStateStorage extends AbstractStateStorage {
 
 	private Predicate<? super File> fileFilter(Map<String, Filter> filterMap) {
 		return p -> filterMap.entrySet().stream().filter(f -> f.getKey().equals(TeamsHistory.TIMESTAMP_KEY)).map(e -> {
-			
-			if(e.getValue().operator.contains("==") && e.getValue().value.equals(String.valueOf(p.lastModified()))) {
+
+			if (e.getValue().operator.contains("==") && e.getValue().value.equals(String.valueOf(p.lastModified()))) {
 				return true;
-			}else if(e.getValue().operator.contains(">") && Long.valueOf(e.getValue().value) < p.lastModified()) {
+			} else if (e.getValue().operator.contains(">") && Long.valueOf(e.getValue().value) < p.lastModified()) {
 				return true;
-			}else if(e.getValue().operator.contains("<") && Long.valueOf(e.getValue().value) > p.lastModified()) {
+			} else if (e.getValue().operator.contains("<") && Long.valueOf(e.getValue().value) > p.lastModified()) {
 				return true;
-			}{
+			}
+			{
 				return false;
 			}
 		}).findFirst().orElse(true);
-		
+
 	}
 
 	private String getTagIndexFolder(Map<String, Filter> map, Filter addressFilter) {
